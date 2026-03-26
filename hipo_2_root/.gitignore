@@ -1,0 +1,10 @@
+*.simg
+*/*.simg
+*.so
+*.d
+results/*
+*_cxx_ACLiC*
+*.root
+**.hipo
+results*/*
+**.evio.*

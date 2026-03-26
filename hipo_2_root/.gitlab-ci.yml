@@ -1,0 +1,414 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "webide"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "testing"'
+    - if: '$CI_COMMIT_BRANCH == "staging"'
+    - if: '$CI_COMMIT_TAG'
+
+
+variables:
+  COATJAVA_REF_NAME: main
+  KUBERNETES_MEMORY_LIMIT: "8Gi"
+  #RUN_NUMBER: 20777
+  LOCAL_DATA_DIR: "/scratch/${CI_PROJECT_NAME}_${CI_PIPELINE_ID}"
+  NEVENTS: 1000
+
+default:
+  image: ubuntu:noble
+  tags:
+    - silicon-cached
+  artifacts:
+    when: always
+    paths:
+      - results
+    expire_in: 1 week
+
+clas12_database:
+  image: codecr.jlab.org/hallb/alert/coatjava/coatjava:$COATJAVA_REF_NAME
+  tags:
+    - silicon-cached
+  script:
+    - mkdir ${LOCAL_DATA_DIR}
+    - ( [ -f "ccdb.sqlite" ] || wget -q https://clasweb.jlab.org/clas12offline/sqlite/ccdb/latest.sqlite -O ccdb.sqlite )
+    #- ( [ -f "ccdb.sqlite" ] || wget -q https://userweb.jlab.org/~whit/data_files/ccdb.sqlite -O ccdb.sqlite )
+    #- ( [ -f "rcdb.sqlite" ] || wget -q https://clasweb.jlab.org/clas12offline/sqlite/rcdb/latest.sqlite -O rcdb.sqlite )
+    - ( [ -f "rcdb.sqlite" ] || wget -q https://userweb.jlab.org/~whit/data_files/rcdb.sqlite -O rcdb.sqlite )
+  cache:
+    - key: clas12testing
+      paths:
+        - ccdb.sqlite
+        - rcdb.sqlite
+
+alert_decode:
+  image: codecr.jlab.org/hallb/alert/coatjava/coatjava:$COATJAVA_REF_NAME
+  tags:
+    - silicon-cached
+  needs: ["clas12_database"]
+  script:
+    - ls -lrth 
+      # not sure if this is still needed...
+    - apt install  -y python3-sqlalchemy
+    - git clone --depth=1 https://github.com/JeffersonLab/ccdb.git
+    - source ccdb/environment.bash
+    - ls -lrth 
+    - ls -lrth /opt/coatjava
+    - ls -lrth  ${LOCAL_DATA_DIR}
+    - ( [ -f "ccdb.sqlite" ] || wget -q https://clasweb.jlab.org/clas12offline/sqlite/ccdb/latest.sqlite -O ccdb.sqlite )
+    #- ( [ -f "ccdb.sqlite" ] || wget -q https://userweb.jlab.org/~whit/data_files/ccdb.sqlite -O ccdb.sqlite )
+    #- ( [ -f "rcdb.sqlite" ] || wget -q https://clasweb.jlab.org/clas12offline/sqlite/rcdb/latest.sqlite -O rcdb.sqlite )
+    - ( [ -f "rcdb.sqlite" ] || wget -q https://userweb.jlab.org/~whit/data_files/rcdb.sqlite -O rcdb.sqlite )
+    - export PATH=/opt/coatjava/coatjava/bin:$PATH
+    - source /opt/coatjava/coatjava/libexec/env.sh
+    - ls -lrth
+    - printenv
+    - echo "RUN_NUMBER = ${RUN_NUMBER}" 
+    - echo "CLAS12DIR = ${CLAS12DIR}" 
+    - export CCDB_CONNECTION="sqlite:///${PWD}/ccdb.sqlite"
+    - export RCDB_CONNECTION="sqlite:///${PWD}/rcdb.sqlite"
+    - echo "CCDB_CONNECTION = ${CCDB_CONNECTION}" 
+    - echo "RCDB_CONNECTION = ${RCDB_CONNECTION}" 
+      #- ccdb dump /daq/tt/atof2::default
+    - decoder -help || true
+    - decoder -n ${NEVENTS} -o ${LOCAL_DATA_DIR}/alert_${RUN_NUMBER}.hipo  /globus/clas_0${RUN_NUMBER}/clas_*.evio.*
+    - ls -lrth
+  cache:
+    - key: clas12testing
+      paths:
+        - ccdb.sqlite
+        - rcdb.sqlite
+      policy: pull
+  parallel:
+    matrix:
+      - RUN_NUMBER: [
+                    #"20770","20777","20781","20821","20822","20823","20825", "20904",
+                    # "21003", "21004",
+                     #"21005","21009","21011","21019","21023",
+                     #"21023", "21274"
+                     "22188"
+                    ]
+reconstruction:
+  image: codecr.jlab.org/hallb/alert/coatjava/coatjava:$COATJAVA_REF_NAME
+  needs: 
+    - job: "alert_decode"
+  cache:
+    - key: clas12testing
+      paths:
+        - ccdb.sqlite
+        - rcdb.sqlite
+      policy: pull
+  tags:
+    - silicon-cached
+  before_script:
+    - ( [ -f "ccdb.sqlite" ] || wget -q https://clasweb.jlab.org/clas12offline/sqlite/ccdb/latest.sqlite -O ccdb.sqlite )
+    #- ( [  -f "ccdb.sqlite" ] || wget -q https://userweb.jlab.org/~whit/data_files/ccdb.sqlite -O ccdb.sqlite )
+    #- ( [ -f "rcdb.sqlite" ] || wget -q https://clasweb.jlab.org/clas12offline/sqlite/rcdb/latest.sqlite -O rcdb.sqlite )
+    - ( [ -f "rcdb.sqlite" ] || wget -q https://userweb.jlab.org/~whit/data_files/rcdb.sqlite -O rcdb.sqlite )
+    - export PATH=/opt/coatjava/coatjava/bin:$PATH
+    - source /opt/coatjava/coatjava/libexec/env.sh
+    - export CCDB_CONNECTION="sqlite:///${PWD}/ccdb.sqlite"
+    - export RCDB_CONNECTION="sqlite:///${PWD}/rcdb.sqlite"
+  script:
+    - echo "RUN_NUMBER = ${RUN_NUMBER}" 
+    - echo "CLAS12DIR = ${CLAS12DIR}" 
+    - echo "CCDB_CONNECTION = ${CCDB_CONNECTION}" 
+    - echo "RCDB_CONNECTION = ${RCDB_CONNECTION}" 
+    - ls -lrth
+    - ls -lrth  ${LOCAL_DATA_DIR}
+    - rm -f ${LOCAL_DATA_DIR}/reco_${RUN_NUMBER}.hipo
+    - rm -f ${LOCAL_DATA_DIR}/reco2_${RUN_NUMBER}.hipo
+    - >
+      recon-util -y config/default.yml \
+                 -i ${LOCAL_DATA_DIR}/alert_${RUN_NUMBER}.hipo \
+                 -o ${LOCAL_DATA_DIR}/reco2_${RUN_NUMBER}.hipo 
+    - >
+      recon-util -i ${LOCAL_DATA_DIR}/reco2_${RUN_NUMBER}.hipo \
+                 -o ${LOCAL_DATA_DIR}/reco_comics_${RUN_NUMBER}.hipo \
+                 org.jlab.rec.service.ATOFTestEngine 
+    - ls -lrth
+  parallel:
+    matrix:
+      - RUN_NUMBER: [
+                    #"20770","20777","20781","20821","20822","20823","20825", "20904",
+                    # "21003", "21004",
+                     #"21005","21009","21011","21019","21023",
+                     #"21023", "21274"
+                     "22188"
+                    ]
+
+#reconstruction_for_cosmics:
+#  image: codecr.jlab.org/hallb/alert/coatjava/coatjava:$COATJAVA_REF_NAME
+#  needs: 
+#    - job: "reconstruction"
+#  cache:
+#    - key: clas12testing
+#      paths:
+#        - ccdb.sqlite
+#        - rcdb.sqlite
+#      policy: pull
+#  tags:
+#    - silicon-cached
+#  before_script:
+#    - ( [ -f "ccdb.sqlite" ] || wget -q https://clasweb.jlab.org/clas12offline/sqlite/ccdb/latest.sqlite -O ccdb.sqlite )
+#    #- ( [  -f "rcdb.sqlite" ] || wget -q https://clasweb.jlab.org/clas12offline/sqlite/rcdb/rcdb_2024-07-13.sqlite -O rcdb.sqlite )
+#    - ( [ -f "rcdb.sqlite" ] || wget -q https://clasweb.jlab.org/clas12offline/sqlite/rcdb/latest.sqlite -O rcdb.sqlite )
+#    - export PATH=/opt/coatjava/coatjava/bin:$PATH
+#    - source /opt/coatjava/coatjava/libexec/env.sh
+#    - export CCDB_CONNECTION="sqlite:///${PWD}/ccdb.sqlite"
+#    - export RCDB_CONNECTION="sqlite:///${PWD}/rcdb.sqlite"
+#  script:
+#    - echo "RUN_NUMBER = ${RUN_NUMBER}" 
+#    - echo "CLAS12DIR = ${CLAS12DIR}" 
+#    - echo "CCDB_CONNECTION = ${CCDB_CONNECTION}" 
+#    - echo "RCDB_CONNECTION = ${RCDB_CONNECTION}" 
+#    - rm -f ${LOCAL_DATA_DIR}/reco_comics_${RUN_NUMBER}.hipo
+#    - >
+#      recon-util -i ${LOCAL_DATA_DIR}/reco2_${RUN_NUMBER}.hipo \
+#                 -o ${LOCAL_DATA_DIR}/reco_comics_${RUN_NUMBER}.hipo \
+#                 org.jlab.rec.service.ATOFTestEngine 
+#    - ls -lrth
+#  parallel:
+#    matrix:
+#      - RUN_NUMBER: ["20770","20777","20781","20821","20822","20823","20825", "20904",
+#                    # "21003", "21004",
+#                     "21005","21009","21011","21019","21023"]     
+
+# Here we simply use the RDF hipo reader to convert the hipo file to root
+# for subsequent analyses
+alert_to_root:
+  image: codecr.jlab.org/hallb/clas12/clas12-containers/hipo:latest
+  needs: 
+    - job: "reconstruction"
+      parallel:
+        matrix:
+          - RUN_NUMBER: [
+            #"20770","20777","20781","20821","20822","20823","20825", "20904",
+            # "21003", "21004",
+            #"21005","21009","21011","21019","21023",
+            #"21023", "21274"
+                     "22188"
+            ]
+  tags:
+    - silicon-cached
+  script:
+    - ls -lrth
+    - ls -lrth  ${LOCAL_DATA_DIR}
+    - echo ${LOCAL_DATA_DIR}
+    - root -b -q "alert_to_root.cxx+(\"${LOCAL_DATA_DIR}/alert_${RUN_NUMBER}.hipo\",\"${LOCAL_DATA_DIR}/alert_${RUN_NUMBER}.root\")"
+    - root -b -q "alert_to_root.cxx+(\"${LOCAL_DATA_DIR}/reco2_${RUN_NUMBER}.hipo\",\"${LOCAL_DATA_DIR}/reco2_${RUN_NUMBER}.root\")"
+    - root -b -q "alert_to_root.cxx+(\"${LOCAL_DATA_DIR}/reco_comics_${RUN_NUMBER}.hipo\",\"${LOCAL_DATA_DIR}/reco_comics_${RUN_NUMBER}.root\")"
+    - ls -lrth
+    - ls -lrth ${LOCAL_DATA_DIR}
+  parallel:
+    matrix:
+      - RUN_NUMBER: [
+        #"20770","20777","20781","20821","20822","20823","20825", "20904",
+        # "21003", "21004",
+        #"21005","21009","21011","21019","21023",
+        #"21023", "21274"
+        "22188"
+        ]
+  #artifacts:
+  #  when: always
+  #  paths:
+  #   - ${LOCAL_DATA_DIR}/alert_${RUN_NUMBER}.root
+  #    - reco2_${RUN_NUMBER}.root  # this is a test to see if using a yaml file produces the same thing
+  #    - reco_comics_${RUN_NUMBER}.root # contains a tree for the cosmic test bank
+  #  expire_in: 1 week
+
+atof_analysis:
+  image: codecr.jlab.org/hallb/clas12/clas12-containers/hipo:latest
+  needs: 
+    - job: "alert_to_root"
+  tags:
+    - silicon-cached
+  script:
+    - mkdir results
+    - root -b -q "atof_tdcs.cxx(\"${LOCAL_DATA_DIR}/alert_${RUN_NUMBER}.root\")"
+    - ls -lrth
+  artifacts:
+    when: always
+    paths:
+      - results/
+    expire_in: 1 week
+  parallel:
+    matrix:
+      - RUN_NUMBER: [
+        #"20770","20777","20781","20821","20822","20823","20825", "20904",
+        # "21003", "21004",
+        #"21005","21009","21011","21019","21023",
+        #"21023", "21274"
+        "22188"
+        ]
+
+ahdc_analysis:
+  image: codecr.jlab.org/hallb/clas12/clas12-containers/hipo:latest
+  needs: 
+    - job: "alert_to_root"
+  tags:
+    - silicon-cached
+  script:
+    - mkdir results
+    - root -b -q "ahdc_waveforms.cxx(\"${LOCAL_DATA_DIR}/alert_${RUN_NUMBER}.root\")"
+    - ls -lrth
+  artifacts:
+    when: always
+    paths:
+      - results/
+    expire_in: 1 week
+  parallel:
+    matrix:
+      - RUN_NUMBER: [
+        #"20770","20777","20781","20821","20822","20823","20825", "20904",
+        # "21003", "21004",
+        #"21005","21009","21011","21019","21023",
+        #"21023", "21274"
+        "22188"
+        ]
+
+event_display:
+  image: codecr.jlab.org/hallb/clas12/clas12-containers/hipo:latest
+  allow_failure: true
+  needs: 
+    - job: "alert_to_root"
+  tags:
+    - silicon-cached
+  script:
+    - mkdir results 
+    - python3 analyses/cosmics/atof_cosmics.py ${LOCAL_DATA_DIR}/reco_comics_${RUN_NUMBER}.root
+  artifacts:
+    when: always
+    paths:
+      - results/
+    expire_in: 1 week
+  parallel:
+    matrix:
+      - RUN_NUMBER: [
+        #"20770","20777","20781","20821","20822","20823","20825", "20904",
+        # "21003", "21004",
+        #"21005","21009","21011","21019","21023",
+        #"21023", "21274"
+        "22188"
+        ]
+
+ahdc_wf:
+  image: codecr.jlab.org/hallb/clas12/clas12-containers/hipo:latest
+  allow_failure: true
+  needs: 
+    - job: "alert_to_root"
+  tags:
+    - silicon-cached
+  script:
+    - mkdir results 
+    - python3 analyses/checks/ahdc_waveform_types.py ${LOCAL_DATA_DIR}/alert_${RUN_NUMBER}.root
+  artifacts:
+    when: always
+    paths:
+      - results/
+    expire_in: 1 week
+  parallel:
+    matrix:
+      - RUN_NUMBER: [
+        "22188"
+        ]
+
+atof_efficiency:
+  image: codecr.jlab.org/hallb/clas12/clas12-containers/hipo:latest
+  allow_failure: true
+  needs: 
+    - job: "alert_to_root"
+  tags:
+    - silicon-cached
+  script:
+    - mkdir results 
+    - python3 analyses/cosmics/atof_efficiency.py ${LOCAL_DATA_DIR}/reco_comics_${RUN_NUMBER}.root ${RUN_NUMBER}
+    - cp results/* ${LOCAL_DATA_DIR}/
+    - echo ${LOCAL_DATA_DIR}
+    - ls -ltrh ${LOCAL_DATA_DIR}
+    - ls -ltrh results
+    - echo ${LOCAL_DATA_DIR}/integrated_efficiencies_${RUN_NUMBER}.csv
+  artifacts:
+    when: always
+    paths:
+      - results/
+    expire_in: 1 week
+  parallel:
+    matrix:
+      - RUN_NUMBER: [
+        #"20770","20777","20781","20821","20822","20823","20825", "20904",
+        # "21003", "21004",
+        #"21005","21009","21011","21019","21023",
+        #"21023", "21274"
+        "22188"
+        ]
+
+
+analyses:
+  needs: 
+    - job: "alert_to_root"
+    - job: "atof_efficiency"
+     # parallel:
+     #   matrix:
+     #     - RUN_NUMBER: ["20770","20777","20758","20764","20781"]
+  variables:
+    RUNS: 22188
+  trigger:
+    include: 
+      - local: 'analyses/cosmics/config.yml'
+    strategy: depend
+
+checks_analysis:
+  needs: 
+    - job: "alert_to_root"
+    #parallel:
+    #  matrix:
+    #          - RUN_NUMBER: ["21023"]
+  variables:
+    RUNS: 22188
+  trigger:
+      include: 
+        - local: 'analyses/checks/config.yml'
+      strategy: depend
+
+                # old stuff  below
+                #hipo_dataframe_test:
+                #  image: codecr.jlab.org/hallb/clas12/clas12-containers/hipo:latest
+                #  needs: ["atof_decode"]
+                #  when: manual
+                #  script:
+      #    - mkdir results
+      #    - root -b -q hipo_df_test.cxx+  
+      #    - ls -lrth
+      #  artifacts:
+      #    paths:
+      #      - results
+      #    expire_in: 1 week
+      #atof_no_df:
+      #  image: codecr.jlab.org/hallb/clas12/clas12-containers/hipo:latest
+      #  needs: ["atof_decode"]
+      #  when: manual
+      #  script:
+      #    - mkdir results
+      #    - source /usr/local/libexec/this_hipo.sh
+      #    - g++ atof_dump.cc  -o atof_dump $(pkg-config --cflags --libs hipo4)
+      #    - ./atof_dump atof_test.hipo  
+      #testing:
+      #  image: codecr.jlab.org/hallb/alert/c12/coatjava:latest
+      #  needs: ["coatjava_build"]
+      #  script:
+      #    - df -h
+      #    - ls -lrth /
+      #    - pwd
+      #    - ls -lrth
+      #    - printenv
+
+#run_gemc:
+#  image: jeffersonlab/gemc:dev-ubuntu24
+#  when: manual
+#  tags:
+#    - silicon-cached
+#  script: 
+#    - gemc --help
+
